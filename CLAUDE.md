@@ -13,14 +13,30 @@ references/   → Supplementary checklists (testing, performance, security, acce
 docs/         → Setup guides for different tools
 ```
 
+## Target Stack
+
+The skills in this pack are written for and tested against the following
+stack. Examples in every SKILL.md speak this stack's idioms:
+
+- **Language / runtime:** PHP 8.2+, `declare(strict_types=1)` by default
+- **Framework:** Slim 4 (PSR-15) or a vanilla front controller
+- **Database:** MySQL 8 via PDO; versioned SQL migrations
+- **Templating:** Smarty 4
+- **Frontend:** vanilla JS modules, jQuery on legacy pages, Vue 3 SFC islands
+- **Dependency manager:** Composer (PSR-4 autoloading)
+- **Tests:** PHPUnit (primary), Pest (optional), Jest/Vitest for JS-only modules
+- **Quality gates:** `phpcs` (PSR-12), `phpstan`, `composer audit`
+- **CI:** Bitbucket Pipelines
+- **Runtime / deploy:** LEMP (Nginx + PHP-FPM + MySQL) behind Akamai / Cloudflare
+
 ## Skills by Phase
 
 **Define:** spec-driven-development
 **Plan:** planning-and-task-breakdown
-**Build:** incremental-implementation, test-driven-development, context-engineering, frontend-ui-engineering, api-and-interface-design
+**Build:** incremental-implementation, test-driven-development, context-engineering, frontend-ui-engineering, api-and-interface-design, php-backend-engineering, database-design-and-optimization
 **Verify:** browser-testing-with-devtools, debugging-and-error-recovery
-**Review:** code-review-and-quality, code-simplification, security-and-hardening, performance-optimization
-**Ship:** git-workflow-and-versioning, ci-cd-and-automation, deprecation-and-migration, documentation-and-adrs, shipping-and-launch
+**Review:** code-review-and-quality, code-simplification, security-and-hardening, performance-optimization, legacy-code-refactoring
+**Ship:** git-workflow-and-versioning, ci-cd-and-automation, deprecation-and-migration, documentation-and-adrs, shipping-and-launch, server-deployment-lemp
 
 ## Conventions
 
@@ -33,8 +49,18 @@ docs/         → Setup guides for different tools
 
 ## Commands
 
-- `npm test` — Not applicable (this is a documentation project)
-- Validate: Check that all SKILL.md files have valid YAML frontmatter with name and description
+This repo is documentation only — there is no PHP runtime here. Validate by
+checking that every `skills/*/SKILL.md` has valid YAML frontmatter with
+`name` + `description`, ≤ 500 lines, and the six required sections.
+
+When agents apply these skills in a **consuming PHP project**, the canonical
+commands are:
+
+- `composer install --no-interaction` — install dependencies
+- `./vendor/bin/phpunit` — run the test suite
+- `./vendor/bin/phpcs --standard=PSR12 src/ tests/` — lint
+- `./vendor/bin/phpstan analyse --memory-limit=1G` — static analysis
+- `composer audit` — security audit
 
 ## Boundaries
 

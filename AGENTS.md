@@ -6,6 +6,31 @@ This file provides guidance to AI coding agents (Claude Code, Cursor, Copilot, A
 
 A collection of skills for Claude.ai and Claude Code for senior software engineers. Skills are packaged instructions and scripts that extend Claude and your coding agents capabilities.
 
+## Target Stack
+
+Every skill in `skills/` uses PHP-stack idioms in its examples. Agents applying
+these skills should assume the consuming project uses:
+
+- PHP 8.2+, Slim 4 or a vanilla front controller, `declare(strict_types=1)`
+- MySQL 8 via PDO, versioned SQL migrations
+- Smarty 4 templates; vanilla JS + jQuery legacy + Vue 3 SFC islands
+- Composer with PSR-4 autoloading
+- PHPUnit / Pest for PHP tests, Jest / Vitest for JS-only tests
+- `phpcs` (PSR-12), `phpstan`, `composer audit` as quality gates
+- Bitbucket Pipelines for CI
+- LEMP deploy (Nginx + PHP-FPM + MySQL) behind Akamai or Cloudflare
+
+PHP-specific conventions enforced across the skills:
+
+- `declare(strict_types=1);` at the top of every new file
+- Thin controllers, fat services, I/O-only repositories
+- PDO prepared statements everywhere — never concatenated SQL
+- `===` / `!==` only; never loose comparison on user input
+- `\DateTimeImmutable` for all timestamps
+- `password_hash` / `password_verify` for credentials
+- Output escaping via Smarty `|escape` or `htmlspecialchars(..., ENT_QUOTES)`
+
+
 ## Creating a New Skill
 
 ### Directory Structure
