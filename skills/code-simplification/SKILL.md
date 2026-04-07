@@ -62,30 +62,31 @@ Simplification that breaks project consistency is not simplification — it's ch
 
 Explicit code is better than compact code when the compact version requires a mental pause to parse.
 
-```typescript
-// UNCLEAR: Dense ternary chain
-const label = isNew ? 'New' : isUpdated ? 'Updated' : isArchived ? 'Archived' : 'Active';
+```php
+// UNCLEAR: dense nested ternary
+$label = $isNew ? 'New' : ($isUpdated ? 'Updated' : ($isArchived ? 'Archived' : 'Active'));
 
-// CLEAR: Readable mapping
-function getStatusLabel(item: Item): string {
-  if (item.isNew) return 'New';
-  if (item.isUpdated) return 'Updated';
-  if (item.isArchived) return 'Archived';
-  return 'Active';
+// CLEAR: readable early-return mapping
+function getStatusLabel(Item $item): string
+{
+    if ($item->isNew)      return 'New';
+    if ($item->isUpdated)  return 'Updated';
+    if ($item->isArchived) return 'Archived';
+    return 'Active';
 }
 ```
 
-```typescript
-// UNCLEAR: Chained reduces with inline logic
-const result = items.reduce((acc, item) => ({
-  ...acc,
-  [item.id]: { ...acc[item.id], count: (acc[item.id]?.count ?? 0) + 1 }
-}), {});
+```php
+// UNCLEAR: array_reduce with nested spread and null-coalescing
+$result = array_reduce($items, function (array $acc, Item $item): array {
+    $acc[$item->id] = ['count' => ($acc[$item->id]['count'] ?? 0) + 1];
+    return $acc;
+}, []);
 
-// CLEAR: Named intermediate step
-const countById = new Map<string, number>();
-for (const item of items) {
-  countById.set(item.id, (countById.get(item.id) ?? 0) + 1);
+// CLEAR: named intermediate loop
+$countById = [];
+foreach ($items as $item) {
+    $countById[$item->id] = ($countById[$item->id] ?? 0) + 1;
 }
 ```
 
@@ -184,114 +185,101 @@ COMPARE BEFORE AND AFTER:
 
 If the "simplified" version is harder to understand or review, revert. Not every simplification attempt succeeds.
 
-## Language-Specific Guidance
+## PHP Simplification Patterns
 
-### TypeScript / JavaScript
-
-```typescript
-// SIMPLIFY: Unnecessary async wrapper
-// Before
-async function getUser(id: string): Promise<User> {
-  return await userService.findById(id);
-}
-// After
-function getUser(id: string): Promise<User> {
-  return userService.findById(id);
-}
-
+```php
 // SIMPLIFY: Verbose conditional assignment
 // Before
-let displayName: string;
-if (user.nickname) {
-  displayName = user.nickname;
+if ($user->nickname !== null && $user->nickname !== '') {
+    $displayName = $user->nickname;
 } else {
-  displayName = user.fullName;
+    $displayName = $user->fullName;
 }
-// After
-const displayName = user.nickname || user.fullName;
+// After — PHP 7+ null coalescing + default for empty strings
+$displayName = $user->nickname ?: $user->fullName;
+```
 
+```php
 // SIMPLIFY: Manual array building
 // Before
-const activeUsers: User[] = [];
-for (const user of users) {
-  if (user.isActive) {
-    activeUsers.push(user);
-  }
+$activeUsers = [];
+foreach ($users as $user) {
+    if ($user->isActive) {
+        $activeUsers[] = $user;
+    }
 }
 // After
-const activeUsers = users.filter((user) => user.isActive);
+$activeUsers = array_values(array_filter($users, fn(User $u) => $u->isActive));
+```
 
+```php
 // SIMPLIFY: Redundant boolean return
 // Before
-function isValid(input: string): boolean {
-  if (input.length > 0 && input.length < 100) {
-    return true;
-  }
-  return false;
+public function isValid(string $input): bool
+{
+    if (strlen($input) > 0 && strlen($input) < 100) {
+        return true;
+    }
+    return false;
 }
 // After
-function isValid(input: string): boolean {
-  return input.length > 0 && input.length < 100;
+public function isValid(string $input): bool
+{
+    $length = strlen($input);
+    return $length > 0 && $length < 100;
 }
 ```
 
-### Python
-
-```python
-# SIMPLIFY: Verbose dictionary building
-# Before
-result = {}
-for item in items:
-    result[item.id] = item.name
-# After
-result = {item.id: item.name for item in items}
-
-# SIMPLIFY: Nested conditionals with early return
-# Before
-def process(data):
-    if data is not None:
-        if data.is_valid():
-            if data.has_permission():
-                return do_work(data)
-            else:
-                raise PermissionError("No permission")
-        else:
-            raise ValueError("Invalid data")
-    else:
-        raise TypeError("Data is None")
-# After
-def process(data):
-    if data is None:
-        raise TypeError("Data is None")
-    if not data.is_valid():
-        raise ValueError("Invalid data")
-    if not data.has_permission():
-        raise PermissionError("No permission")
-    return do_work(data)
-```
-
-### React / JSX
-
-```tsx
-// SIMPLIFY: Verbose conditional rendering
+```php
+// SIMPLIFY: Deeply nested validation → guard clauses
 // Before
-function UserBadge({ user }: Props) {
-  if (user.isAdmin) {
-    return <Badge variant="admin">Admin</Badge>;
-  } else {
-    return <Badge variant="default">User</Badge>;
-  }
+public function process(?Task $task): Result
+{
+    if ($task !== null) {
+        if ($task->isValid()) {
+            if ($this->auth->canEdit($task)) {
+                return $this->doWork($task);
+            } else {
+                throw new ForbiddenException('No permission');
+            }
+        } else {
+            throw new ValidationException('Invalid task');
+        }
+    } else {
+        throw new \InvalidArgumentException('Task is null');
+    }
 }
-// After
-function UserBadge({ user }: Props) {
-  const variant = user.isAdmin ? 'admin' : 'default';
-  const label = user.isAdmin ? 'Admin' : 'User';
-  return <Badge variant={variant}>{label}</Badge>;
+// After — guard clauses read top-to-bottom as preconditions
+public function process(?Task $task): Result
+{
+    if ($task === null) {
+        throw new \InvalidArgumentException('Task is null');
+    }
+    if (!$task->isValid()) {
+        throw new ValidationException('Invalid task');
+    }
+    if (!$this->auth->canEdit($task)) {
+        throw new ForbiddenException('No permission');
+    }
+    return $this->doWork($task);
 }
+```
 
-// SIMPLIFY: Prop drilling through intermediate components
-// Before — consider whether context or composition solves this better.
-// This is a judgment call — flag it, don't auto-refactor.
+```php
+// SIMPLIFY: Long if/elseif chains on a single value → match()
+// Before
+if     ($status === 'new')       { $label = 'New'; }
+elseif ($status === 'in_review') { $label = 'In review'; }
+elseif ($status === 'done')      { $label = 'Done'; }
+else                             { $label = 'Unknown'; }
+
+// After — exhaustive match is clearer and fails loudly on typos
+$label = match ($status) {
+    'new'       => 'New',
+    'in_review' => 'In review',
+    'done'      => 'Done',
+    default     => 'Unknown',
+};
 ```
 
 ## Common Rationalizations

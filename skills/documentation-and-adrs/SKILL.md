@@ -38,23 +38,24 @@ ADRs capture the reasoning behind significant technical decisions. They're the h
 Store ADRs in `docs/decisions/` with sequential numbering:
 
 ```markdown
-# ADR-001: Use PostgreSQL for primary database
+# ADR-001: Use MySQL 8 for primary database
 
 ## Status
 Accepted | Superseded by ADR-XXX | Deprecated
 
 ## Date
-2025-01-15
+2026-01-15
 
 ## Context
 We need a primary database for the task management application. Key requirements:
 - Relational data model (users, tasks, teams with relationships)
-- ACID transactions for task state changes
-- Support for full-text search on task content
-- Managed hosting available (for small team, limited ops capacity)
+- ACID transactions on InnoDB for task state changes
+- Full-text search on task content via MySQL `FULLTEXT` indexes
+- Runs inside our existing LEMP stack with minimal ops overhead
 
 ## Decision
-Use PostgreSQL with Prisma ORM.
+Use MySQL 8 (InnoDB) with hand-written versioned SQL migrations and PDO
+for data access from PHP.
 
 ## Alternatives Considered
 
@@ -65,19 +66,19 @@ Use PostgreSQL with Prisma ORM.
 
 ### SQLite
 - Pros: Zero configuration, embedded, fast for reads
-- Cons: Limited concurrent write support, no managed hosting for production
-- Rejected: Not suitable for multi-user web application in production
+- Cons: Limited concurrent write support, unsuitable for LEMP production use
+- Rejected: Not suitable for a multi-user web application in production
 
-### MySQL
-- Pros: Mature, widely supported
-- Cons: PostgreSQL has better JSON support, full-text search, and ecosystem tooling
-- Rejected: PostgreSQL is the better fit for our feature requirements
+### PostgreSQL
+- Pros: Richer JSON and full-text tooling, strong ecosystem
+- Cons: Adds a second DB engine to our ops stack; team already operates MySQL
+- Rejected: MySQL 8 covers our feature requirements and fits existing ops
 
 ## Consequences
-- Prisma provides type-safe database access and migration management
-- We can use PostgreSQL's full-text search instead of adding Elasticsearch
-- Team needs PostgreSQL knowledge (standard skill, low risk)
-- Hosting on managed service (Supabase, Neon, or RDS)
+- Hand-rolled SQL migrations — explicit control, no ORM abstraction to fight
+- InnoDB transactions gate every write path that mutates related rows
+- MySQL `FULLTEXT` covers search without introducing Elasticsearch
+- Team already operates MySQL in production — zero ops learning curve
 ```
 
 ### ADR Lifecycle
@@ -95,47 +96,50 @@ PROPOSED → ACCEPTED → (SUPERSEDED or DEPRECATED)
 
 Comment the *why*, not the *what*:
 
-```typescript
+```php
 // BAD: Restates the code
 // Increment counter by 1
-counter += 1;
+$counter += 1;
 
 // GOOD: Explains non-obvious intent
 // Rate limit uses a sliding window — reset counter at window boundary,
 // not on a fixed schedule, to prevent burst attacks at window edges
-if (now - windowStart > WINDOW_SIZE_MS) {
-  counter = 0;
-  windowStart = now;
+if ($now - $windowStart > self::WINDOW_SIZE_MS) {
+    $counter = 0;
+    $windowStart = $now;
 }
 ```
 
 ### When NOT to Comment
 
-```typescript
+```php
 // Don't comment self-explanatory code
-function calculateTotal(items: CartItem[]): number {
-  return items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+function calculateTotal(array $items): int
+{
+    return array_sum(array_map(fn(CartItem $i) => $i->price * $i->quantity, $items));
 }
 
 // Don't leave TODO comments for things you should just do now
 // TODO: add error handling  ← Just add it
 
 // Don't leave commented-out code
-// const oldImplementation = () => { ... }  ← Delete it, git has history
+// $oldImplementation = fn() => ...;  ← Delete it, git has history
 ```
 
 ### Document Known Gotchas
 
-```typescript
+```php
 /**
- * IMPORTANT: This function must be called before the first render.
- * If called after hydration, it causes a flash of unstyled content
- * because the theme context isn't available during SSR.
+ * IMPORTANT: must be called before the Smarty view is rendered.
+ * If called after the template is fetched, the theme variables are
+ * missing from the compiled template cache and the page flashes
+ * with the default palette on first paint.
  *
  * See ADR-003 for the full design rationale.
  */
-export function initializeTheme(theme: Theme): void {
-  // ...
+public function initializeTheme(Theme $theme): void
+{
+    // ...
 }
 ```
 
@@ -143,23 +147,24 @@ export function initializeTheme(theme: Theme): void {
 
 For public APIs (REST, GraphQL, library interfaces):
 
-### Inline with Types (Preferred for TypeScript)
+### Inline with PHPDoc (Preferred for PHP)
 
-```typescript
+```php
 /**
  * Creates a new task.
  *
- * @param input - Task creation data (title required, description optional)
- * @returns The created task with server-generated ID and timestamps
- * @throws {ValidationError} If title is empty or exceeds 200 characters
- * @throws {AuthenticationError} If the user is not authenticated
+ * @param CreateTaskInput $input Task creation data (title required, description optional)
+ * @return Task The created task with server-generated ID and timestamps
+ * @throws ValidationException    If the title is empty or exceeds 200 characters
+ * @throws AuthenticationException If the user is not authenticated
  *
  * @example
- * const task = await createTask({ title: 'Buy groceries' });
- * console.log(task.id); // "task_abc123"
+ *   $task = $taskService->createTask(new CreateTaskInput(title: 'Buy groceries'));
+ *   echo $task->id; // "task_abc123"
  */
-export async function createTask(input: CreateTaskInput): Promise<Task> {
-  // ...
+public function createTask(CreateTaskInput $input): Task
+{
+    // ...
 }
 ```
 
@@ -198,17 +203,19 @@ One-paragraph description of what this project does.
 
 ## Quick Start
 1. Clone the repo
-2. Install dependencies: `npm install`
+2. Install dependencies: `composer install`
 3. Set up environment: `cp .env.example .env`
-4. Run the dev server: `npm run dev`
+4. Apply migrations: `php bin/migrate.php up`
+5. Run the dev server: `php -S localhost:8080 -t public/`
 
 ## Commands
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Start development server |
-| `npm test` | Run tests |
-| `npm run build` | Production build |
-| `npm run lint` | Run linter |
+| `php -S localhost:8080 -t public/` | Start development server |
+| `./vendor/bin/phpunit` | Run tests |
+| `composer install --no-dev -o` | Production install |
+| `./vendor/bin/phpcs` | Run linter (PSR-12) |
+| `./vendor/bin/phpstan analyse` | Static analysis |
 
 ## Architecture
 Brief overview of the project structure and key design decisions.

@@ -71,8 +71,8 @@ Commit messages explain the *why*, not just the *what*:
 feat: add email validation to registration endpoint
 
 Prevents invalid email formats from reaching the database.
-Uses Zod schema validation at the route handler level,
-consistent with existing validation patterns in auth.ts.
+Uses filter_var(FILTER_VALIDATE_EMAIL) at the controller boundary,
+consistent with existing validation patterns in AuthController.
 
 # Bad: Describes what's obvious from the diff
 update auth.ts
@@ -194,16 +194,16 @@ After any modification, provide a structured summary. This makes review easier, 
 
 ```
 CHANGES MADE:
-- src/routes/tasks.ts: Added validation middleware to POST endpoint
-- src/lib/validation.ts: Added TaskCreateSchema using Zod
+- src/Controller/TaskController.php: Added validation at the POST boundary
+- src/Service/Validator.php:         Added validateTaskCreate() using filter_var
 
 THINGS I DIDN'T TOUCH (intentionally):
-- src/routes/auth.ts: Has similar validation gap but out of scope
-- src/middleware/error.ts: Error format could be improved (separate task)
+- src/Controller/AuthController.php: Has similar validation gap but out of scope
+- src/Middleware/ErrorHandler.php:    Error format could be improved (separate task)
 
 POTENTIAL CONCERNS:
-- The Zod schema is strict — rejects extra fields. Confirm this is desired.
-- Added zod as a dependency (72KB gzipped) — already in package.json
+- The validator rejects unknown fields — confirm this is the desired behaviour.
+- No new Composer dependency was added; validation uses core PHP functions only.
 ```
 
 This pattern catches wrong assumptions early and gives reviewers a clear map of the change. The "DIDN'T TOUCH" section is especially important — it shows you exercised scope discipline and didn't go on an unsolicited renovation.
@@ -217,35 +217,39 @@ Before every commit:
 git diff --staged
 
 # 2. Ensure no secrets
-git diff --staged | grep -i "password\|secret\|api_key\|token"
+git diff --staged | grep -iE "password|secret|api_key|token"
 
 # 3. Run tests
-npm test
+./vendor/bin/phpunit
 
 # 4. Run linting
-npm run lint
+./vendor/bin/phpcs
 
-# 5. Run type checking
-npx tsc --noEmit
+# 5. Run static analysis
+./vendor/bin/phpstan analyse
 ```
 
-Automate this with git hooks:
+Automate this with a `.git/hooks/pre-commit` shell hook:
 
-```json
-// package.json (using lint-staged + husky)
-{
-  "lint-staged": {
-    "*.{ts,tsx}": ["eslint --fix", "prettier --write"],
-    "*.{json,md}": ["prettier --write"]
-  }
-}
+```bash
+#!/usr/bin/env bash
+set -e
+
+# Only lint the PHP files that are staged
+STAGED_PHP=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.php$' || true)
+if [ -n "$STAGED_PHP" ]; then
+    ./vendor/bin/phpcs -n $STAGED_PHP
+    ./vendor/bin/phpstan analyse --no-progress $STAGED_PHP
+fi
+
+./vendor/bin/phpunit --stop-on-failure
 ```
 
 ## Handling Generated Files
 
-- **Commit generated files** only if the project expects them (e.g., `package-lock.json`, Prisma migrations)
-- **Don't commit** build output (`dist/`, `.next/`), environment files (`.env`), or IDE config (`.vscode/settings.json` unless shared)
-- **Have a `.gitignore`** that covers: `node_modules/`, `dist/`, `.env`, `.env.local`, `*.pem`
+- **Commit generated files** only if the project expects them (e.g., `composer.lock`, versioned SQL migration files)
+- **Don't commit** build output, environment files (`.env`), or IDE config (`.vscode/settings.json` unless shared)
+- **Have a `.gitignore`** that covers: `vendor/`, `node_modules/`, `.env`, `.env.local`, `*.pem`, `var/cache/`, `var/log/`, Smarty compile dirs
 
 ## Using Git for Debugging
 
@@ -261,7 +265,7 @@ git log --oneline -20
 git diff HEAD~5..HEAD -- src/
 
 # Find who last changed a specific line
-git blame src/services/task.ts
+git blame src/Service/TaskService.php
 
 # Search commit messages for a keyword
 git log --grep="validation" --oneline
@@ -284,7 +288,7 @@ git log --grep="validation" --oneline
 - Commit messages like "fix", "update", "misc"
 - Formatting changes mixed with behavior changes
 - No `.gitignore` in the project
-- Committing `node_modules/`, `.env`, or build artifacts
+- Committing `vendor/`, `.env`, or build artifacts
 - Long-lived branches that diverge significantly from main
 - Force-pushing to shared branches
 

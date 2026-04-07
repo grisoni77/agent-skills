@@ -39,10 +39,10 @@ Start with a high-level vision. Ask the human clarifying questions until require
 
 ```
 ASSUMPTIONS I'M MAKING:
-1. This is a web application (not native mobile)
-2. Authentication uses session-based cookies (not JWT)
-3. The database is PostgreSQL (based on existing Prisma schema)
-4. We're targeting modern browsers only (no IE11)
+1. This is a server-rendered web application (Smarty templates, not an SPA)
+2. Authentication uses PHP sessions (not JWT)
+3. The database is MySQL 8 with InnoDB (based on existing schema)
+4. PHP 8.2 on the LEMP stack behind Cloudflare
 → Correct me now or I'll proceed with these.
 ```
 
@@ -54,19 +54,24 @@ Don't silently fill in ambiguous requirements. The spec's entire purpose is to s
 
 2. **Commands** — Full executable commands with flags, not just tool names.
    ```
-   Build: npm run build
-   Test: npm test -- --coverage
-   Lint: npm run lint --fix
-   Dev: npm run dev
+   Install: composer install
+   Test:    ./vendor/bin/phpunit --coverage-text
+   Lint:    ./vendor/bin/phpcs
+   Static:  ./vendor/bin/phpstan analyse
+   Dev:     php -S localhost:8080 -t public/
    ```
 
 3. **Project Structure** — Where source code lives, where tests go, where docs belong.
    ```
-   src/           → Application source code
-   src/components → React components
-   src/lib        → Shared utilities
-   tests/         → Unit and integration tests
-   e2e/           → End-to-end tests
+   public/        → Front controller (index.php) + static assets
+   src/           → PHP application code (PSR-4 autoloaded)
+   src/Controller → HTTP controllers
+   src/Service    → Business logic
+   src/Repository → Data access (PDO)
+   templates/     → Smarty templates (.tpl)
+   assets/        → JS (vanilla + jQuery + Vue islands), CSS
+   tests/         → PHPUnit unit and integration tests
+   migrations/    → Versioned SQL migration files
    docs/          → Documentation
    ```
 

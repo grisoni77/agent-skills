@@ -44,25 +44,33 @@ Measure before optimizing. Performance work without measurement is guessing — 
 # Lighthouse in Chrome DevTools (or CI)
 # Chrome DevTools → Performance tab → Record
 # Chrome DevTools MCP → Performance trace
+```
 
-# Web Vitals library in code
-import { onLCP, onINP, onCLS } from 'web-vitals';
-
-onLCP(console.log);
-onINP(console.log);
-onCLS(console.log);
+```html
+<!-- web-vitals library loaded from the CDN and wired to vanilla JS -->
+<script type="module">
+  import { onLCP, onINP, onCLS } from 'https://unpkg.com/web-vitals?module';
+  onLCP(console.log);
+  onINP(console.log);
+  onCLS(console.log);
+</script>
 ```
 
 **Backend:**
 ```bash
-# Response time logging
-# Application Performance Monitoring (APM)
-# Database query logging with timing
+# MySQL slow query log — slowest offenders across the app
+sudo mysqldumpslow -s t -t 20 /var/log/mysql/slow.log
 
-# Simple timing
-console.time('db-query');
-const result = await db.query(...);
-console.timeEnd('db-query');
+# Xdebug profiler → Cachegrind dumps openable in KCachegrind/qcachegrind
+php -d xdebug.mode=profile -d xdebug.output_dir=/tmp bin/run.php
+```
+
+```php
+// Simple timing in PHP (temporary, remove after diagnosis)
+$start = hrtime(true);
+$rows  = $pdo->query('SELECT ...')->fetchAll();
+$ms    = (hrtime(true) - $start) / 1_000_000;
+error_log(sprintf('db-query: %.2f ms', $ms));
 ```
 
 ### Where to Start Measuring
@@ -72,20 +80,20 @@ Use the symptom to decide what to measure first:
 ```
 What is slow?
 ├── First page load
-│   ├── Large bundle? --> Measure bundle size, check code splitting
-│   ├── Slow server response? --> Measure TTFB, check API/database
+│   ├── Large JS/CSS bundle? --> Measure asset size, check code splitting
+│   ├── Slow server response?  --> Measure TTFB, check PHP-FPM, MySQL, OPcache
 │   └── Render-blocking resources? --> Check network waterfall for CSS/JS blocking
 ├── Interaction feels sluggish
-│   ├── UI freezes on click? --> Profile main thread, look for long tasks (>50ms)
-│   ├── Form input lag? --> Check re-renders, controlled component overhead
-│   └── Animation jank? --> Check layout thrashing, forced reflows
+│   ├── UI freezes on click?   --> Profile main thread, look for long tasks (>50ms)
+│   ├── Form input lag?        --> Check jQuery handlers, event delegation
+│   └── Animation jank?        --> Check layout thrashing, forced reflows
 ├── Page after navigation
-│   ├── Data loading? --> Measure API response times, check for waterfalls
-│   └── Client rendering? --> Profile component render time, check for N+1 fetches
+│   ├── Data loading?          --> Measure fetch/XHR response times, check for waterfalls
+│   └── Template rendering?    --> Smarty compile cache warm? template_c writable?
 └── Backend / API
-    ├── Single endpoint slow? --> Profile database queries, check indexes
-    ├── All endpoints slow? --> Check connection pool, memory, CPU
-    └── Intermittent slowness? --> Check for lock contention, GC pauses, external deps
+    ├── Single endpoint slow?  --> EXPLAIN the queries, check indexes, OPcache status
+    ├── All endpoints slow?    --> Check PHP-FPM pool sizing, MySQL connections, server CPU
+    └── Intermittent slowness? --> Check InnoDB lock contention, Cloudflare cache hit ratio, external deps
 ```
 
 ### Step 2: Identify the Bottleneck
@@ -105,40 +113,73 @@ Common bottlenecks by category:
 
 | Symptom | Likely Cause | Investigation |
 |---------|-------------|---------------|
-| Slow API responses | N+1 queries, missing indexes, unoptimized queries | Check database query log |
-| Memory growth | Leaked references, unbounded caches, large payloads | Heap snapshot analysis |
-| CPU spikes | Synchronous heavy computation, regex backtracking | CPU profiling |
-| High latency | Missing caching, redundant computation, network hops | Trace requests through the stack |
+| Slow responses | N+1 queries, missing indexes, unoptimized SQL | `EXPLAIN` the queries, read the slow query log |
+| Memory growth | Large result sets loaded into arrays, Smarty template cache bloat | `memory_get_peak_usage()`, Xdebug profiling |
+| CPU spikes | Synchronous heavy computation, regex backtracking | Xdebug profiler + Cachegrind |
+| High latency | Missing OPcache, cold template compile, no HTTP cache | Check OPcache status, Nginx `fastcgi_cache`, Cloudflare/Akamai hit ratio |
 
 ### Step 3: Fix Common Anti-Patterns
 
 #### N+1 Queries (Backend)
 
-```typescript
+```php
 // BAD: N+1 — one query per task for the owner
-const tasks = await db.tasks.findMany();
-for (const task of tasks) {
-  task.owner = await db.users.findUnique({ where: { id: task.ownerId } });
+$tasks = $pdo->query('SELECT id, title, owner_id FROM tasks')->fetchAll();
+foreach ($tasks as &$task) {
+    $stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
+    $stmt->execute([$task['owner_id']]);
+    $task['owner'] = $stmt->fetch();
 }
 
-// GOOD: Single query with join/include
-const tasks = await db.tasks.findMany({
-  include: { owner: true },
-});
+// GOOD: Single query with JOIN
+$sql = <<<SQL
+    SELECT t.id, t.title, u.id AS owner_id, u.name AS owner_name
+    FROM tasks t
+    INNER JOIN users u ON u.id = t.owner_id
+SQL;
+$tasks = $pdo->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+
+// GOOD (alternative): one follow-up query with IN() — still O(1) roundtrips
+$tasks    = $pdo->query('SELECT id, title, owner_id FROM tasks')->fetchAll();
+$ownerIds = array_column($tasks, 'owner_id');
+$in       = implode(',', array_fill(0, count($ownerIds), '?'));
+$stmt     = $pdo->prepare("SELECT id, name FROM users WHERE id IN ($in)");
+$stmt->execute($ownerIds);
+$owners   = array_column($stmt->fetchAll(), null, 'id');
+foreach ($tasks as &$task) {
+    $task['owner'] = $owners[$task['owner_id']] ?? null;
+}
 ```
+
+See `database-design-and-optimization` for index strategy and `EXPLAIN` workflows.
 
 #### Unbounded Data Fetching
 
-```typescript
-// BAD: Fetching all records
-const allTasks = await db.tasks.findMany();
+```php
+// BAD: fetching every row
+$allTasks = $pdo->query('SELECT * FROM tasks')->fetchAll();
 
-// GOOD: Paginated with limits
-const tasks = await db.tasks.findMany({
-  take: 20,
-  skip: (page - 1) * 20,
-  orderBy: { createdAt: 'desc' },
-});
+// GOOD: OFFSET-based pagination (simple, fine for small offsets)
+$stmt = $pdo->prepare(
+    'SELECT id, title, created_at
+       FROM tasks
+       ORDER BY created_at DESC
+       LIMIT :limit OFFSET :offset'
+);
+$stmt->bindValue(':limit',  20,                       PDO::PARAM_INT);
+$stmt->bindValue(':offset', ($page - 1) * 20,         PDO::PARAM_INT);
+$stmt->execute();
+$tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// BETTER: keyset pagination — stable O(log n) even for deep pages
+$stmt = $pdo->prepare(
+    'SELECT id, title, created_at
+       FROM tasks
+       WHERE created_at < :cursor
+       ORDER BY created_at DESC
+       LIMIT 20'
+);
+$stmt->execute([':cursor' => $cursor]);
 ```
 
 #### Missing Image Optimization (Frontend)
@@ -159,93 +200,113 @@ const tasks = await db.tasks.findMany({
 />
 ```
 
-#### Unnecessary Re-renders (React)
+#### Expensive Template Work (Smarty / jQuery)
 
-```tsx
-// BAD: Creates new object on every render, causing children to re-render
-function TaskList() {
-  return <TaskFilters options={{ sortBy: 'date', order: 'desc' }} />;
-}
+```smarty
+{* BAD: N+1 style lookup inside a template loop *}
+{foreach $tasks as $task}
+  {assign var=owner value=UserService::findById($task.owner_id)}
+  <li>{$task.title} — {$owner.name|escape}</li>
+{/foreach}
 
-// GOOD: Stable reference
-const DEFAULT_OPTIONS = { sortBy: 'date', order: 'desc' } as const;
-function TaskList() {
-  return <TaskFilters options={DEFAULT_OPTIONS} />;
-}
+{* GOOD: pre-join owner in PHP, assign a flat list to the template *}
+{foreach $tasks as $task}
+  <li>{$task.title|escape} — {$task.owner_name|escape}</li>
+{/foreach}
+```
 
-// Use React.memo for expensive components
-const TaskItem = React.memo(function TaskItem({ task }: Props) {
-  return <div>{/* expensive render */}</div>;
+```javascript
+// BAD: jQuery DOM churn inside a loop (re-renders per iteration)
+items.forEach(function (item) {
+  $('#list').append('<li>' + item.name + '</li>');
 });
 
-// Use useMemo for expensive computations
-function TaskStats({ tasks }: Props) {
-  const stats = useMemo(() => calculateStats(tasks), [tasks]);
-  return <div>{stats.completed} / {stats.total}</div>;
+// GOOD: build the fragment once, insert once
+var html = items.map(function (i) {
+  return '<li>' + $('<div>').text(i.name).html() + '</li>';
+}).join('');
+$('#list').append(html);
+```
+
+#### OPcache and Object Caches (Server-side)
+
+```ini
+; php.ini — production tuning for PHP 8
+opcache.enable=1
+opcache.memory_consumption=256
+opcache.interned_strings_buffer=16
+opcache.max_accelerated_files=20000
+opcache.validate_timestamps=0   ; bump the version on deploy instead
+opcache.jit=tracing
+opcache.jit_buffer_size=128M
+```
+
+```php
+// In-process memoization for config that is expensive to load
+final class ConfigCache
+{
+    private static ?AppConfig $cached   = null;
+    private static int        $expiryTs = 0;
+    private const TTL_SECONDS           = 300;
+
+    public static function get(PDO $pdo): AppConfig
+    {
+        if (self::$cached !== null && time() < self::$expiryTs) {
+            return self::$cached;
+        }
+        self::$cached   = AppConfig::loadFromDb($pdo);
+        self::$expiryTs = time() + self::TTL_SECONDS;
+        return self::$cached;
+    }
 }
 ```
 
-#### Large Bundle Size
+#### HTTP Caching — Nginx + Akamai / Cloudflare
 
-```typescript
-// BAD: Importing entire library
-import { format } from 'date-fns';
-
-// GOOD: Tree-shakable import (if the library supports it)
-import { format } from 'date-fns/format';
-
-// GOOD: Dynamic import for heavy, rarely-used features
-const ChartLibrary = lazy(() => import('./ChartLibrary'));
-```
-
-#### Missing Caching (Backend)
-
-```typescript
-// Cache frequently-read, rarely-changed data
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-let cachedConfig: AppConfig | null = null;
-let cacheExpiry = 0;
-
-async function getAppConfig(): Promise<AppConfig> {
-  if (cachedConfig && Date.now() < cacheExpiry) {
-    return cachedConfig;
-  }
-  cachedConfig = await db.config.findFirst();
-  cacheExpiry = Date.now() + CACHE_TTL;
-  return cachedConfig;
+```nginx
+# Nginx: long-lived immutable assets (filename is content-hashed)
+location ~* \.(?:js|css|woff2|png|jpg|webp)$ {
+    expires 1y;
+    add_header Cache-Control "public, immutable";
 }
 
-// HTTP caching headers for static assets
-app.use('/static', express.static('public', {
-  maxAge: '1y',           // Cache for 1 year
-  immutable: true,        // Never revalidate (use content hashing in filenames)
-}));
-
-// Cache-Control for API responses
-res.set('Cache-Control', 'public, max-age=300'); // 5 minutes
+# Fastcgi cache for anonymous GET responses (bypass for logged-in users)
+fastcgi_cache_bypass $cookie_PHPSESSID;
+fastcgi_no_cache     $cookie_PHPSESSID;
+fastcgi_cache_valid  200 10m;
 ```
+
+```php
+// Send explicit Cache-Control from PHP for cacheable endpoints
+header('Cache-Control: public, max-age=300, s-maxage=600');
+header('Vary: Accept-Encoding');
+```
+
+See `server-deployment-lemp` for the full Akamai / Cloudflare purge strategy
+and cache-bypass cookie configuration.
 
 ## Performance Budget
 
 Set budgets and enforce them:
 
 ```
-JavaScript bundle: < 200KB gzipped (initial load)
-CSS: < 50KB gzipped
-Images: < 200KB per image (above the fold)
-Fonts: < 100KB total
-API response time: < 200ms (p95)
-Time to Interactive: < 3.5s on 4G
-Lighthouse Performance score: ≥ 90
+JavaScript bundle:         < 200KB gzipped (initial load)
+CSS:                       < 50KB  gzipped
+Images:                    < 200KB per image (above the fold)
+Fonts:                     < 100KB total
+Server TTFB (cached):      < 100ms
+Server TTFB (uncached):    < 400ms (p95)
+MySQL slow query threshold: 200ms
+Lighthouse Performance:    ≥ 90
 ```
 
 **Enforce in CI:**
 ```bash
-# Bundle size check
-npx bundlesize --config bundlesize.config.json
-
-# Lighthouse CI
+# Lighthouse CI (runs against a preview URL in Bitbucket Pipelines)
 npx lhci autorun
+
+# Fail the build if any query in the slow query log crossed the threshold
+./bin/assert-no-slow-queries.sh
 ```
 
 ## Common Rationalizations
@@ -266,7 +327,8 @@ npx lhci autorun
 - Images without dimensions, lazy loading, or responsive sizes
 - Bundle size growing without review
 - No performance monitoring in production
-- `React.memo` and `useMemo` everywhere (overusing is as bad as underusing)
+- OPcache disabled in production, or `validate_timestamps=1` on a busy app
+- `SELECT *` everywhere with no index awareness
 
 ## Verification
 

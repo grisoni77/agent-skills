@@ -38,23 +38,24 @@ Avoid forcing consumers to choose between multiple versions of the same dependen
 
 Define the interface before implementing it. The contract is the spec — implementation follows.
 
-```typescript
-// Define the contract first
-interface TaskAPI {
-  // Creates a task and returns the created task with server-generated fields
-  createTask(input: CreateTaskInput): Promise<Task>;
+```php
+// Define the contract first as a PHP interface
+interface TaskApi
+{
+    /** Creates a task and returns it with server-generated fields. */
+    public function createTask(CreateTaskInput $input): Task;
 
-  // Returns paginated tasks matching filters
-  listTasks(params: ListTasksParams): Promise<PaginatedResult<Task>>;
+    /** Returns paginated tasks matching filters. */
+    public function listTasks(ListTasksParams $params): PaginatedResult;
 
-  // Returns a single task or throws NotFoundError
-  getTask(id: string): Promise<Task>;
+    /** Returns a single task or throws NotFoundException. */
+    public function getTask(string $id): Task;
 
-  // Partial update — only provided fields change
-  updateTask(id: string, input: UpdateTaskInput): Promise<Task>;
+    /** Partial update — only provided fields change. */
+    public function updateTask(string $id, UpdateTaskInput $input): Task;
 
-  // Idempotent delete — succeeds even if already deleted
-  deleteTask(id: string): Promise<void>;
+    /** Idempotent delete — succeeds even if already deleted. */
+    public function deleteTask(string $id): void;
 }
 ```
 
@@ -62,16 +63,17 @@ interface TaskAPI {
 
 Pick one error strategy and use it everywhere:
 
-```typescript
-// REST: HTTP status codes + structured error body
-// Every error response follows the same shape
-interface APIError {
-  error: {
-    code: string;        // Machine-readable: "VALIDATION_ERROR"
-    message: string;     // Human-readable: "Email is required"
-    details?: unknown;   // Additional context when helpful
-  };
-}
+```php
+// REST: HTTP status codes + structured JSON error body
+// Every error response follows the same shape:
+//
+// {
+//   "error": {
+//     "code":    "VALIDATION_ERROR",   // machine-readable
+//     "message": "Email is required",  // human-readable
+//     "details": { ... }                // optional additional context
+//   }
+// }
 
 // Status code mapping
 // 400 → Client sent invalid data
@@ -89,23 +91,26 @@ interface APIError {
 
 Trust internal code. Validate at system edges where external input enters:
 
-```typescript
-// Validate at the API boundary
-app.post('/api/tasks', async (req, res) => {
-  const result = CreateTaskSchema.safeParse(req.body);
-  if (!result.success) {
-    return res.status(422).json({
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: 'Invalid task data',
-        details: result.error.flatten(),
-      },
-    });
-  }
+```php
+// Validate at the API boundary (Slim route handler)
+$app->post('/tasks', function (Request $req, Response $res) use ($taskService) {
+    try {
+        $input = CreateTaskInput::fromArray((array) $req->getParsedBody());
+    } catch (ValidationException $e) {
+        $res->getBody()->write(json_encode([
+            'error' => [
+                'code'    => 'VALIDATION_ERROR',
+                'message' => 'Invalid task data',
+                'details' => $e->getErrors(),
+            ],
+        ], JSON_THROW_ON_ERROR));
+        return $res->withStatus(422)->withHeader('Content-Type', 'application/json');
+    }
 
-  // After validation, internal code trusts the types
-  const task = await taskService.create(result.data);
-  return res.status(201).json(task);
+    // After validation, internal code trusts the typed DTO
+    $task = $taskService->create($input);
+    $res->getBody()->write(json_encode($task, JSON_THROW_ON_ERROR));
+    return $res->withStatus(201)->withHeader('Content-Type', 'application/json');
 });
 ```
 
@@ -126,21 +131,22 @@ Where validation does NOT belong:
 
 Extend interfaces without breaking existing consumers:
 
-```typescript
-// Good: Add optional fields
-interface CreateTaskInput {
-  title: string;
-  description?: string;
-  priority?: 'low' | 'medium' | 'high';  // Added later, optional
-  labels?: string[];                       // Added later, optional
+```php
+// Good: Add optional/nullable properties
+final class CreateTaskInput
+{
+    public function __construct(
+        public readonly string  $title,
+        public readonly ?string $description = null,
+        public readonly ?string $priority    = null, // 'low' | 'medium' | 'high', added later
+        /** @var list<string> */
+        public readonly array   $labels      = [],   // added later, defaults to empty
+    ) {}
 }
 
-// Bad: Change existing field types or remove fields
-interface CreateTaskInput {
-  title: string;
-  // description: string;  // Removed — breaks existing consumers
-  priority: number;         // Changed from string — breaks existing consumers
-}
+// Bad: Change existing field types or remove them
+// - Dropping $description breaks callers that still send it
+// - Changing $priority from string to int breaks every existing consumer
 ```
 
 ### 5. Predictable Naming
@@ -206,57 +212,92 @@ PATCH /api/tasks/123
 { "title": "Updated title" }
 ```
 
-## TypeScript Interface Patterns
+## PHP DTO and Type Patterns
 
-### Use Discriminated Unions for Variants
+### Use Enums or Sealed Class Hierarchies for Variants
 
-```typescript
-// Good: Each variant is explicit
-type TaskStatus =
-  | { type: 'pending' }
-  | { type: 'in_progress'; assignee: string; startedAt: Date }
-  | { type: 'completed'; completedAt: Date; completedBy: string }
-  | { type: 'cancelled'; reason: string; cancelledAt: Date };
+PHP 8.1 enums cover most "one-of" cases cleanly. For variants that carry
+payload specific to each case, use a small class hierarchy and pattern
+match on the concrete type.
 
-// Consumer gets type narrowing
-function getStatusLabel(status: TaskStatus): string {
-  switch (status.type) {
-    case 'pending': return 'Pending';
-    case 'in_progress': return `In progress (${status.assignee})`;
-    case 'completed': return `Done on ${status.completedAt}`;
-    case 'cancelled': return `Cancelled: ${status.reason}`;
-  }
+```php
+enum TaskStatusKind: string
+{
+    case Pending    = 'pending';
+    case InProgress = 'in_progress';
+    case Completed  = 'completed';
+    case Cancelled  = 'cancelled';
+}
+
+abstract class TaskStatus
+{
+    public function __construct(public readonly TaskStatusKind $kind) {}
+}
+final class PendingStatus    extends TaskStatus { public function __construct() { parent::__construct(TaskStatusKind::Pending); } }
+final class InProgressStatus extends TaskStatus { public function __construct(public readonly string $assignee, public readonly \DateTimeImmutable $startedAt) { parent::__construct(TaskStatusKind::InProgress); } }
+final class CompletedStatus  extends TaskStatus { public function __construct(public readonly \DateTimeImmutable $completedAt, public readonly string $completedBy) { parent::__construct(TaskStatusKind::Completed); } }
+final class CancelledStatus  extends TaskStatus { public function __construct(public readonly string $reason, public readonly \DateTimeImmutable $cancelledAt) { parent::__construct(TaskStatusKind::Cancelled); } }
+
+function statusLabel(TaskStatus $status): string
+{
+    return match (true) {
+        $status instanceof PendingStatus    => 'Pending',
+        $status instanceof InProgressStatus => "In progress ({$status->assignee})",
+        $status instanceof CompletedStatus  => 'Done on ' . $status->completedAt->format('Y-m-d'),
+        $status instanceof CancelledStatus  => "Cancelled: {$status->reason}",
+    };
 }
 ```
 
-### Input/Output Separation
+### Input / Output Separation
 
-```typescript
-// Input: what the caller provides
-interface CreateTaskInput {
-  title: string;
-  description?: string;
+Keep the DTO the caller sends separate from the entity the system returns.
+Server-generated fields only live on the output type.
+
+```php
+final class CreateTaskInput
+{
+    public function __construct(
+        public readonly string  $title,
+        public readonly ?string $description = null,
+    ) {}
 }
 
-// Output: what the system returns (includes server-generated fields)
-interface Task {
-  id: string;
-  title: string;
-  description: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-  createdBy: string;
+final class Task
+{
+    public function __construct(
+        public readonly string             $id,
+        public readonly string             $title,
+        public readonly ?string            $description,
+        public readonly \DateTimeImmutable $createdAt,
+        public readonly \DateTimeImmutable $updatedAt,
+        public readonly string             $createdBy,
+    ) {}
 }
 ```
 
-### Use Branded Types for IDs
+### Wrap IDs in Value Objects
 
-```typescript
-type TaskId = string & { readonly __brand: 'TaskId' };
-type UserId = string & { readonly __brand: 'UserId' };
+PHP has no branded-type equivalent, but a tiny value object stops you from
+accidentally passing a `UserId` where a `TaskId` is required.
 
-// Prevents accidentally passing a UserId where a TaskId is expected
-function getTask(id: TaskId): Promise<Task> { ... }
+```php
+final class TaskId
+{
+    public function __construct(public readonly string $value)
+    {
+        if ($value === '') {
+            throw new \InvalidArgumentException('TaskId cannot be empty');
+        }
+    }
+}
+
+final class UserId
+{
+    public function __construct(public readonly string $value) {}
+}
+
+public function getTask(TaskId $id): Task { /* ... */ }
 ```
 
 ## Common Rationalizations

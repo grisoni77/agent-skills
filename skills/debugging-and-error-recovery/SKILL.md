@@ -59,8 +59,8 @@ Cannot reproduce on demand:
 │   ├── Try with artificial delays (setTimeout, sleep) to widen race windows
 │   └── Run under load or concurrency to increase collision probability
 ├── Environment-dependent?
-│   ├── Compare Node/browser versions, OS, environment variables
-│   ├── Check for differences in data (empty vs populated database)
+│   ├── Compare PHP versions, extensions, php.ini settings, browser versions
+│   ├── Check for differences in data (empty vs populated MySQL database)
 │   └── Try reproducing in CI where the environment is clean
 ├── State-dependent?
 │   ├── Check for leaked state between tests or requests
@@ -75,13 +75,13 @@ Cannot reproduce on demand:
 For test failures:
 ```bash
 # Run the specific failing test
-npm test -- --grep "test name"
+./vendor/bin/phpunit --filter TestName
 
-# Run with verbose output
-npm test -- --verbose
+# Run with verbose output and testdox formatting
+./vendor/bin/phpunit --testdox --verbose
 
-# Run in isolation (rules out test pollution)
-npm test -- --testPathPattern="specific-file" --runInBand
+# Run a single file in isolation (rules out test pollution)
+./vendor/bin/phpunit tests/Service/UserServiceTest.php
 ```
 
 ### Step 2: Localize
@@ -103,9 +103,9 @@ Which layer is failing?
 # Find which commit introduced the bug
 git bisect start
 git bisect bad                    # Current commit is broken
-git bisect good <known-good-sha> # This commit worked
+git bisect good <known-good-sha>  # This commit worked
 # Git will checkout midpoint commits; run your test at each
-git bisect run npm test -- --grep "failing test"
+git bisect run ./vendor/bin/phpunit --filter failingTest
 ```
 
 ### Step 3: Reduce
@@ -139,14 +139,17 @@ Ask: "Why does this happen?" until you reach the actual cause, not just where it
 
 Write a test that catches this specific failure:
 
-```typescript
+```php
 // The bug: task titles with special characters broke the search
-it('finds tasks with special characters in title', async () => {
-  await createTask({ title: 'Fix "quotes" & <brackets>' });
-  const results = await searchTasks('quotes');
-  expect(results).toHaveLength(1);
-  expect(results[0].title).toBe('Fix "quotes" & <brackets>');
-});
+public function testFindsTasksWithSpecialCharactersInTitle(): void
+{
+    $this->taskRepository->create(['title' => 'Fix "quotes" & <brackets>']);
+
+    $results = $this->taskService->search('quotes');
+
+    self::assertCount(1, $results);
+    self::assertSame('Fix "quotes" & <brackets>', $results[0]->title);
+}
 ```
 
 This test will prevent the same bug from recurring. It should fail without the fix and pass with it.
@@ -157,16 +160,16 @@ After fixing, verify the complete scenario:
 
 ```bash
 # Run the specific test
-npm test -- --grep "specific test"
+./vendor/bin/phpunit --filter specificTest
 
 # Run the full test suite (check for regressions)
-npm test
+./vendor/bin/phpunit
 
-# Build the project (check for type/compilation errors)
-npm run build
+# Static analysis (catches type / null-safety issues)
+./vendor/bin/phpstan analyse
 
 # Manual spot check if applicable
-npm run dev  # Verify in browser
+php -S localhost:8080 -t public/  # Verify in browser
 ```
 
 ## Error-Specific Patterns
@@ -188,55 +191,60 @@ Test fails after code change:
 ### Build Failure Triage
 
 ```
-Build fails:
-├── Type error → Read the error, check the types at the cited location
-├── Import error → Check the module exists, exports match, paths are correct
-├── Config error → Check build config files for syntax/schema issues
-├── Dependency error → Check package.json, run npm install
-└── Environment error → Check Node version, OS compatibility
+Build / static analysis fails:
+├── Type error (phpstan)  → Read the error, check the types at the cited location
+├── Autoload error        → Check PSR-4 mapping in composer.json, run `composer dump-autoload`
+├── Config error          → Check php.ini, Nginx, Slim container definitions
+├── Dependency error      → Check composer.json/lock, run `composer install`
+└── Environment error     → Check PHP version, required extensions (pdo_mysql, mbstring, ...)
 ```
 
 ### Runtime Error Triage
 
 ```
 Runtime error:
-├── TypeError: Cannot read property 'x' of undefined
-│   └── Something is null/undefined that shouldn't be
-│       → Check data flow: where does this value come from?
+├── TypeError: Argument #N must be of type X, null given
+│   └── Something is null that shouldn't be
+│       → Check data flow: where does this value come from? Add a type check at the boundary.
+├── PDOException: SQLSTATE[...]
+│   └── Read the SQLSTATE code; check the query, the parameters, and the schema
 ├── Network error / CORS
-│   └── Check URLs, headers, server CORS config
-├── Render error / White screen
-│   └── Check error boundary, console, component tree
+│   └── Check URLs, headers, Nginx CORS config, Cloudflare rules
+├── 500 / white page
+│   └── Check PHP error log (`/var/log/php-fpm/error.log`), display_errors off in prod
 └── Unexpected behavior (no error)
-    └── Add logging at key points, verify data at each step
+    └── Add logging at key points (Monolog / error_log), verify data at each step
 ```
 
 ## Safe Fallback Patterns
 
 When under time pressure, use safe fallbacks:
 
-```typescript
+```php
 // Safe default + warning (instead of crashing)
-function getConfig(key: string): string {
-  const value = process.env[key];
-  if (!value) {
-    console.warn(`Missing config: ${key}, using default`);
-    return DEFAULTS[key] ?? '';
-  }
-  return value;
+function getConfig(string $key): string
+{
+    $value = getenv($key);
+    if ($value === false || $value === '') {
+        error_log("Missing config: {$key}, using default");
+        return DEFAULTS[$key] ?? '';
+    }
+    return $value;
 }
 
-// Graceful degradation (instead of broken feature)
-function renderChart(data: ChartData[]) {
-  if (data.length === 0) {
-    return <EmptyState message="No data available for this period" />;
-  }
-  try {
-    return <Chart data={data} />;
-  } catch (error) {
-    console.error('Chart render failed:', error);
-    return <ErrorState message="Unable to display chart" />;
-  }
+// Graceful degradation (instead of a broken feature) — Smarty-assigned payload
+function renderChart(array $data, Smarty $view): string
+{
+    if ($data === []) {
+        return $view->fetch('partials/empty-state.tpl');
+    }
+    try {
+        $view->assign('series', $data);
+        return $view->fetch('partials/chart.tpl');
+    } catch (\Throwable $e) {
+        error_log('Chart render failed: ' . $e->getMessage());
+        return $view->fetch('partials/error-state.tpl');
+    }
 }
 ```
 

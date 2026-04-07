@@ -21,32 +21,35 @@ Ship with confidence. The goal is not just to deploy — it's to deploy safely, 
 
 ### Code Quality
 
-- [ ] All tests pass (unit, integration, e2e)
-- [ ] Build succeeds with no warnings
-- [ ] Lint and type checking pass
+- [ ] All tests pass (`./vendor/bin/phpunit`, integration, browser smoke)
+- [ ] Lint clean (`./vendor/bin/phpcs`) and static analysis clean (`./vendor/bin/phpstan analyse`)
 - [ ] Code reviewed and approved
 - [ ] No TODO comments that should be resolved before launch
-- [ ] No `console.log` debugging statements in production code
+- [ ] No `var_dump`, `print_r`, `error_log('DEBUG: …')` left in production code
+- [ ] `display_errors=Off` in the production php.ini
 - [ ] Error handling covers expected failure modes
 
 ### Security
 
-- [ ] No secrets in code or version control
-- [ ] `npm audit` shows no critical or high vulnerabilities
-- [ ] Input validation on all user-facing endpoints
-- [ ] Authentication and authorization checks in place
-- [ ] Security headers configured (CSP, HSTS, etc.)
-- [ ] Rate limiting on authentication endpoints
+- [ ] No secrets in code or version control (`.env` outside the webroot)
+- [ ] `composer audit` shows no critical or high vulnerabilities
+- [ ] Input validation on all user-facing endpoints (filter_var / DTOs)
+- [ ] All SQL goes through PDO prepared statements — no interpolation
+- [ ] Authentication and authorization checks in place; `session_regenerate_id(true)` on privilege change
+- [ ] Security headers configured (CSP, HSTS, X-Content-Type-Options, Referrer-Policy)
+- [ ] Rate limiting on login / password-reset endpoints
 - [ ] CORS configured to specific origins (not wildcard)
+- [ ] Session cookies: `HttpOnly`, `Secure`, `SameSite=Lax`
 
 ### Performance
 
 - [ ] Core Web Vitals within "Good" thresholds
-- [ ] No N+1 queries in critical paths
+- [ ] No N+1 queries in critical paths (see `database-design-and-optimization`)
 - [ ] Images optimized (compression, responsive sizes, lazy loading)
-- [ ] Bundle size within budget
-- [ ] Database queries have appropriate indexes
-- [ ] Caching configured for static assets and repeated queries
+- [ ] JS/CSS bundle within budget, assets served with long-lived cache headers
+- [ ] Database queries have appropriate indexes; `EXPLAIN` checked on new hot paths
+- [ ] OPcache enabled with `validate_timestamps=0` in production
+- [ ] Nginx `fastcgi_cache` / CDN configured for anonymous GETs
 
 ### Accessibility
 
@@ -59,12 +62,14 @@ Ship with confidence. The goal is not just to deploy — it's to deploy safely, 
 
 ### Infrastructure
 
-- [ ] Environment variables set in production
-- [ ] Database migrations applied (or ready to apply)
-- [ ] DNS and SSL configured
-- [ ] CDN configured for static assets
-- [ ] Logging and error reporting configured
-- [ ] Health check endpoint exists and responds
+- [ ] Environment variables / `.env` present on the target host (outside webroot)
+- [ ] SQL migrations applied (or staged to apply) — see `database-design-and-optimization`
+- [ ] DNS and SSL configured (Let's Encrypt or Cloudflare origin cert)
+- [ ] Akamai / Cloudflare cache rules reviewed; purge-on-deploy wired into the pipeline
+- [ ] Nginx + PHP-FPM reloaded after deploy
+- [ ] Monolog / error_log wired; errors route to a monitored log file
+- [ ] Health check endpoint exists and responds (`/healthz`)
+- [ ] See `server-deployment-lemp` for the full LEMP pre-deploy checklist
 
 ### Documentation
 
@@ -78,17 +83,17 @@ Ship with confidence. The goal is not just to deploy — it's to deploy safely, 
 
 Ship behind feature flags to decouple deployment from release:
 
-```typescript
-// Feature flag check
-const flags = await getFeatureFlags(userId);
+```php
+// Feature flag check — config-driven, per-user override optional
+$flags = $featureFlags->for($userId);
 
-if (flags.taskSharing) {
-  // New feature: task sharing
-  return <TaskSharingPanel task={task} />;
+if ($flags->isEnabled('task_sharing')) {
+    // New feature: render the task sharing panel partial
+    return $view->fetch('partials/task-sharing-panel.tpl', ['task' => $task]);
 }
 
 // Default: existing behavior
-return null;
+return '';
 ```
 
 **Feature flag lifecycle:**
@@ -187,39 +192,37 @@ Client metrics:
 
 ### Error Reporting
 
-```typescript
-// Set up error boundary with reporting
-class ErrorBoundary extends React.Component {
-  componentDidCatch(error: Error, info: React.ErrorInfo) {
-    // Report to error tracking service
-    reportError(error, {
-      componentStack: info.componentStack,
-      userId: getCurrentUser()?.id,
-      page: window.location.pathname,
-    });
-  }
+```php
+// Global exception handler — routes to Monolog and renders a safe Smarty page
+set_exception_handler(function (\Throwable $e) use ($logger, $view): void {
+    $logger->error($e->getMessage(), [
+        'exception' => $e,
+        'url'       => $_SERVER['REQUEST_URI']  ?? '',
+        'method'    => $_SERVER['REQUEST_METHOD'] ?? '',
+        'user_id'   => $_SESSION['user_id']     ?? null,
+    ]);
 
-  render() {
-    if (this.state.hasError) {
-      return <ErrorFallback onRetry={() => this.setState({ hasError: false })} />;
-    }
-    return this.props.children;
-  }
-}
-
-// Server-side error reporting
-app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
-  reportError(err, {
-    method: req.method,
-    url: req.url,
-    userId: req.user?.id,
-  });
-
-  // Don't expose internals to users
-  res.status(500).json({
-    error: { code: 'INTERNAL_ERROR', message: 'Something went wrong' },
-  });
+    http_response_code(500);
+    // Never leak internals to the user
+    echo $view->fetch('errors/500.tpl');
 });
+
+// Slim equivalent: an error middleware that catches Throwable globally
+$errorMiddleware = $app->addErrorMiddleware(
+    displayErrorDetails: false, // hide stack traces in production
+    logErrors:           true,
+    logErrorDetails:     true
+);
+$errorMiddleware->setDefaultErrorHandler(
+    function (Request $req, \Throwable $e) use ($logger): Response {
+        $logger->error($e->getMessage(), ['exception' => $e, 'url' => (string) $req->getUri()]);
+        $res = new \Slim\Psr7\Response(500);
+        $res->getBody()->write(json_encode([
+            'error' => ['code' => 'INTERNAL_ERROR', 'message' => 'Something went wrong'],
+        ], JSON_THROW_ON_ERROR));
+        return $res->withHeader('Content-Type', 'application/json');
+    }
+);
 ```
 
 ### Post-Launch Verification
@@ -250,18 +253,20 @@ Every deployment needs a rollback plan before it happens:
 ### Rollback Steps
 1. Disable feature flag (if applicable)
    OR
-1. Deploy previous version: `git revert <commit> && git push`
+1. Swap the `current` symlink back to the previous release directory (see `server-deployment-lemp`)
 2. Verify rollback: health check, error monitoring
 3. Communicate: notify team of rollback
 
 ### Database Considerations
-- Migration [X] has a rollback: `npx prisma migrate rollback`
+- Migration [X] has a rollback SQL file: `php bin/migrate.php down 20260401_001_add_task_sharing.sql`
 - Data inserted by new feature: [preserved / cleaned up]
+- Additive migrations (new tables, new nullable columns) are safe to leave in place even on rollback
 
 ### Time to Rollback
-- Feature flag: < 1 minute
-- Redeploy previous version: < 5 minutes
-- Database rollback: < 15 minutes
+- Feature flag off:            < 1 minute
+- Symlink swap to prior build: < 5 minutes
+- Database rollback:           < 15 minutes (only if the migration is reversible)
+- Akamai / Cloudflare purge after rollback: < 2 minutes
 ```
 
 ## Common Rationalizations

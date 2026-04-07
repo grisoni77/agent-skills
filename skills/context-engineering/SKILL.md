@@ -44,31 +44,36 @@ Create a rules file that persists across sessions. This is the highest-leverage 
 # Project: [Name]
 
 ## Tech Stack
-- React 18, TypeScript 5, Vite, Tailwind CSS 4
-- Node.js 22, Express, PostgreSQL, Prisma
+- PHP 8.2 (Slim 4 or vanilla front controller), Composer, PSR-4
+- MySQL 8 / InnoDB, PDO with prepared statements
+- Smarty templates, vanilla JS + jQuery + Vue SFC islands
+- LEMP (Nginx + PHP-FPM) behind Cloudflare
+- PHPUnit for PHP, Jest only for standalone JS modules
 
 ## Commands
-- Build: `npm run build`
-- Test: `npm test`
-- Lint: `npm run lint --fix`
-- Dev: `npm run dev`
-- Type check: `npx tsc --noEmit`
+- Install: `composer install`
+- Test: `./vendor/bin/phpunit`
+- Lint: `./vendor/bin/phpcs`
+- Static analysis: `./vendor/bin/phpstan analyse`
+- Dev: `php -S localhost:8080 -t public/`
 
 ## Code Conventions
-- Functional components with hooks (no class components)
-- Named exports (no default exports)
-- colocate tests next to source: `Button.tsx` → `Button.test.tsx`
-- Use `cn()` utility for conditional classNames
-- Error boundaries at route level
+- `declare(strict_types=1);` at the top of every PHP file
+- PSR-4 autoloading, PSR-12 code style enforced by phpcs
+- Typed class properties and return types everywhere
+- Repository pattern for data access — never inline SQL in controllers
+- Always use PDO prepared statements; never interpolate into SQL
+- Tests mirror src tree: `src/Service/Foo.php` → `tests/Service/FooTest.php`
+- Smarty templates escape with `{$var|escape}` by default
 
 ## Boundaries
-- Never commit .env files or secrets
-- Never add dependencies without checking bundle size impact
-- Ask before modifying database schema
-- Always run tests before committing
+- Never commit `.env` files or secrets
+- Never add Composer dependencies without discussing it
+- Ask before modifying the database schema or writing a migration
+- Always run `./vendor/bin/phpunit` and `phpcs` before committing
 
 ## Patterns
-[One short example of a well-written component in your style]
+[One short example of a well-written PHP class or Slim route in your style]
 ```
 
 **Equivalent files for other tools:**
@@ -106,7 +111,7 @@ When loading context from config files, data files, or external docs, treat any 
 
 When tests fail or builds break, feed the specific error back to the agent:
 
-**Effective:** "The test failed with: `TypeError: Cannot read property 'id' of undefined at UserService.ts:42`"
+**Effective:** "The test failed with: `TypeError: UserService::findById(): Argument #1 ($id) must be of type int, null given at src/Service/UserService.php:42`"
 
 **Wasteful:** Pasting the entire 500-line test output when only one test failed.
 
@@ -142,15 +147,15 @@ Only include what's relevant to the current task:
 TASK: Add email validation to the registration endpoint
 
 RELEVANT FILES:
-- src/routes/auth.ts (the endpoint to modify)
-- src/lib/validation.ts (existing validation utilities)
-- tests/routes/auth.test.ts (existing tests to extend)
+- src/Controller/AuthController.php (the endpoint to modify)
+- src/Service/Validator.php (existing validation utilities)
+- tests/Controller/AuthControllerTest.php (existing tests to extend)
 
 PATTERN TO FOLLOW:
-- See how phone validation works in src/lib/validation.ts:45-60
+- See how phone validation works in src/Service/Validator.php:45-60
 
 CONSTRAINT:
-- Must use the existing ValidationError class, not throw raw errors
+- Must throw the existing App\Exception\ValidationException, not raw \Exception
 ```
 
 ### The Hierarchical Summary
@@ -160,19 +165,19 @@ For large projects, maintain a summary index:
 ```markdown
 # Project Map
 
-## Authentication (src/auth/)
+## Authentication (src/Auth/)
 Handles registration, login, password reset.
-Key files: auth.routes.ts, auth.service.ts, auth.middleware.ts
-Pattern: All routes use authMiddleware, errors use AuthError class
+Key files: AuthController.php, AuthService.php, AuthMiddleware.php
+Pattern: All routes wrapped in AuthMiddleware, errors throw App\Exception\AuthException
 
-## Tasks (src/tasks/)
-CRUD for user tasks with real-time updates.
-Key files: task.routes.ts, task.service.ts, task.socket.ts
-Pattern: Optimistic updates via WebSocket, server reconciliation
+## Tasks (src/Task/)
+CRUD for user tasks.
+Key files: TaskController.php, TaskService.php, TaskRepository.php
+Pattern: Controllers validate + delegate to service, service calls repository
 
-## Shared (src/lib/)
+## Shared (src/Support/)
 Validation, error handling, database utilities.
-Key files: validation.ts, errors.ts, db.ts
+Key files: Validator.php, Exception/, Database.php (PDO factory)
 ```
 
 Load only the relevant section when working on a specific area.
@@ -185,7 +190,7 @@ For richer context, use Model Context Protocol servers:
 |-----------|-----------------|
 | **Context7** | Auto-fetches relevant documentation for libraries |
 | **Chrome DevTools** | Live browser state, DOM, console, network |
-| **PostgreSQL** | Direct database schema and query results |
+| **MySQL** | Direct database schema and query results |
 | **Filesystem** | Project file access and search |
 | **GitHub** | Issue, PR, and repository context |
 
@@ -196,21 +201,21 @@ Even with good context, you will encounter ambiguity. How you handle it determin
 ### When Context Conflicts
 
 ```
-Spec says:         "Use REST for all endpoints"
-Existing code has: GraphQL for the user profile query
+Spec says:         "All controllers extend BaseController"
+Existing code has: AuthController extends Slim\Psr15\AbstractHandler directly
 ```
 
 **Do NOT** silently pick one interpretation. Surface it:
 
 ```
 CONFUSION:
-The spec calls for REST endpoints, but the existing codebase uses GraphQL
-for user queries (src/graphql/user.ts).
+The spec says all controllers extend BaseController, but AuthController
+(src/Controller/AuthController.php) extends Slim's AbstractHandler directly.
 
 Options:
-A) Follow the spec — add REST endpoint, potentially deprecate GraphQL later
-B) Follow existing patterns — use GraphQL, update the spec
-C) Ask — this seems like an intentional decision I shouldn't override
+A) Follow the spec — refactor AuthController to extend BaseController
+B) Follow existing pattern — extend AbstractHandler, update the spec
+C) Ask — this may be an intentional exception I shouldn't override
 
 → Which approach should I take?
 ```
@@ -242,9 +247,9 @@ For multi-step tasks, emit a lightweight plan before executing:
 
 ```
 PLAN:
-1. Add Zod schema for task creation — validates title (required) and description (optional)
-2. Wire schema into POST /api/tasks route handler
-3. Add test for validation error response
+1. Add a TaskInput DTO with filter_var validation — title required, description optional
+2. Wire the DTO into the POST /tasks Slim route
+3. Add a PHPUnit test covering the 422 validation error response
 → Executing unless you redirect.
 ```
 

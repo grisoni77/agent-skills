@@ -127,8 +127,8 @@ If you notice something worth improving outside your task scope, note it — don
 
 ```
 NOTICED BUT NOT TOUCHING:
-- src/utils/format.ts has an unused import (unrelated to this task)
-- The auth middleware could use better error messages (separate task)
+- src/Support/Formatter.php has an unused `use` import (unrelated to this task)
+- The AuthMiddleware could use better error messages (separate task)
 → Want me to create tasks for these?
 ```
 
@@ -148,12 +148,17 @@ After each increment, the project must build and existing tests must pass. Don't
 
 If a feature isn't ready for users but you need to merge increments:
 
-```typescript
-// Feature flag for work-in-progress
-const ENABLE_TASK_SHARING = process.env.FEATURE_TASK_SHARING === 'true';
+```php
+// Feature flag for work-in-progress — config-driven, env-overridable
+return [
+    'features' => [
+        'task_sharing' => (bool) (getenv('FEATURE_TASK_SHARING') ?: false),
+    ],
+];
 
-if (ENABLE_TASK_SHARING) {
-  // New sharing UI
+// Usage in a controller or service
+if ($this->config->get('features.task_sharing')) {
+    // New sharing code path
 }
 ```
 
@@ -163,11 +168,11 @@ This lets you merge small increments to the main branch without exposing incompl
 
 New code should default to safe, conservative behavior:
 
-```typescript
+```php
 // Safe: disabled by default, opt-in
-export function createTask(data: TaskInput, options?: { notify?: boolean }) {
-  const shouldNotify = options?.notify ?? false;
-  // ...
+public function createTask(TaskInput $data, bool $notify = false): Task
+{
+    // ...
 }
 ```
 
@@ -187,11 +192,11 @@ When directing an agent to implement incrementally:
 ```
 "Let's implement Task 3 from the plan.
 
-Start with just the database schema change and the API endpoint.
-Don't touch the UI yet — we'll do that in the next increment.
+Start with just the SQL migration and the Slim route + controller.
+Don't touch the Smarty template yet — we'll do that in the next increment.
 
-After implementing, run `npm test` and `npm run build` to verify
-nothing is broken."
+After implementing, run `./vendor/bin/phpunit` and `./vendor/bin/phpstan analyse`
+to verify nothing is broken."
 ```
 
 Be explicit about what's in scope and what's NOT in scope for each increment.
@@ -201,10 +206,9 @@ Be explicit about what's in scope and what's NOT in scope for each increment.
 After each increment, verify:
 
 - [ ] The change does one thing and does it completely
-- [ ] All existing tests still pass (`npm test`)
-- [ ] The build succeeds (`npm run build`)
-- [ ] Type checking passes (`npx tsc --noEmit`)
-- [ ] Linting passes (`npm run lint`)
+- [ ] All existing tests still pass (`./vendor/bin/phpunit`)
+- [ ] Static analysis is clean (`./vendor/bin/phpstan analyse`)
+- [ ] Linting passes (`./vendor/bin/phpcs`)
 - [ ] The new functionality works as expected
 - [ ] The change is committed with a descriptive message
 
